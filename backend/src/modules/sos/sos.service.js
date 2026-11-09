@@ -14,6 +14,7 @@ const { setComponentStatus } = require('./component.util');
 const storageProvider = require('../../services/storage/storage.provider');
 const dispatchService = require('./dispatch.service');
 const schedulerService = require('../scheduler/scheduler.service');
+const { resolveReportDateRange } = require('./reportDate.util');
 
 // ---------------------------------------------------------------------
 // The remaining time-based transition:
@@ -157,6 +158,14 @@ async function getSosById(id, reqUser) {
     if (!isCollectionMember) {
       throw ApiError.forbidden('You do not have permission to access this SOS');
     }
+
+    // A collection member may only access an SOS while it is active. Once an
+    // admin deactivates it, notification/detail/media/live-location access
+    // must stop immediately. Owners and admins retain their existing access
+    // to the historical SOS record.
+    if (sos.status !== SOS_STATUS.ACTIVE) {
+      throw ApiError.notFound('SOS not found');
+    }
   }
   await enforceLiveLocationExpiry(sos);
   // Legacy records created before backend-component tracking was added are
@@ -288,14 +297,24 @@ async function listSos(query, reqUser) {
   const filter = {};
 
   if (isAdmin(reqUser)) {
-    if (query.status) filter.status = query.status;
+    if (query.status && query.status !== 'all') filter.status = query.status;
     if (query.collectionId) filter.collectionId = query.collectionId;
     if (query.userId) filter.userId = query.userId;
   } else {
     // Non-admins can only ever see their own SOS records — any
     // userId/collectionId in the query is ignored, never trusted.
     filter.userId = reqUser.id;
-    if (query.status) filter.status = query.status;
+    if (query.status && query.status !== 'all') filter.status = query.status;
+  }
+
+  if (query.startDate || query.endDate) {
+    filter.createdAt = {};
+    if (query.startDate) {
+      filter.createdAt.$gte = new Date(query.startDate);
+    }
+    if (query.endDate) {
+      filter.createdAt.$lte = new Date(query.endDate);
+    }
   }
 
   const [items, total] = await Promise.all([
@@ -307,6 +326,188 @@ async function listSos(query, reqUser) {
   ]);
 
   return { items, meta: buildPaginationMeta({ page, limit, total }) };
+}
+
+async function getSosReports(query, reqUser) {
+  const dateRange = resolveReportDateRange(query);
+  const filter = {
+    createdAt: {
+      $gte: dateRange.startDate,
+      $lte: dateRange.endDate,
+    },
+  };
+
+  // Role-based authorization & data isolation
+  if (isAdmin(reqUser)) {
+    if (query.userId) {
+      filter.userId = query.userId;
+    }
+    if (query.collectionId) {
+      filter.collectionId = query.collectionId;
+    }
+  } else {
+    // Regular users can strictly only see their own records
+    filter.userId = reqUser.id;
+  }
+
+  if (query.status && query.status !== 'all') {
+    filter.status = query.status;
+  }
+
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const limit = Math.min(1000, Math.max(1, parseInt(query.limit, 10) || 200));
+  const skip = (page - 1) * limit;
+
+  const [records, totalCount, activeCount, deactivatedCount] = await Promise.all([
+    Sos.find(filter)
+      .populate('userId', 'username mobileNumber email')
+      .populate('collectionId', 'name type')
+      .populate('cancelledBy', 'username')
+      .populate('deactivatedBy', 'username')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Sos.countDocuments(filter),
+    Sos.countDocuments({ ...filter, status: SOS_STATUS.ACTIVE }),
+    Sos.countDocuments({ ...filter, status: SOS_STATUS.DEACTIVATED }),
+  ]);
+
+  const formattedRecords = records.map((sos) => {
+    const user = sos.userId || {};
+    const collection = sos.collectionId || {};
+    const loc = sos.location || {};
+    const hasCoordinates = loc.latitude != null && loc.longitude != null;
+
+    let durationFormatted = 'Not Available';
+    let durationSeconds = null;
+    const createdAtTime = sos.createdAt ? new Date(sos.createdAt).getTime() : null;
+
+    if (createdAtTime) {
+      let endTime = null;
+      if (sos.deactivatedAt) {
+        endTime = new Date(sos.deactivatedAt).getTime();
+      } else if (sos.cancelledAt) {
+        endTime = new Date(sos.cancelledAt).getTime();
+      } else if (sos.status === SOS_STATUS.ACTIVE) {
+        endTime = Date.now();
+      }
+
+      if (endTime && endTime >= createdAtTime) {
+        durationSeconds = Math.round((endTime - createdAtTime) / 1000);
+        const hours = Math.floor(durationSeconds / 3600);
+        const minutes = Math.floor((durationSeconds % 3600) / 60);
+        const seconds = durationSeconds % 60;
+        if (hours > 0) {
+          durationFormatted = `${hours}h ${minutes}m ${seconds}s`;
+        } else if (minutes > 0) {
+          durationFormatted = `${minutes}m ${seconds}s`;
+        } else {
+          durationFormatted = `${seconds}s`;
+        }
+      }
+    }
+
+    const comps = sos.components || {};
+
+    return {
+      id: String(sos._id),
+      eventId: String(sos._id),
+      status: sos.status,
+      statusLabel: sos.status ? (sos.status === 'deactivated' ? 'Deactivated' : sos.status.charAt(0).toUpperCase() + sos.status.slice(1)) : 'Unknown',
+      createdAt: sos.createdAt,
+      dateFormatted: sos.createdAt ? new Date(sos.createdAt).toLocaleDateString() : 'Not Available',
+      timeFormatted: sos.createdAt ? new Date(sos.createdAt).toLocaleTimeString() : 'Not Available',
+      emergencyMessage: sos.emergencyMessage || 'Not Available',
+      duration: durationFormatted,
+      durationSeconds,
+      activatedAt: sos.activatedAt || sos.createdAt,
+      deactivatedAt: sos.deactivatedAt || null,
+      cancelledAt: sos.cancelledAt || null,
+      deactivatedBy: sos.deactivatedBy ? (sos.deactivatedBy.username || String(sos.deactivatedBy)) : null,
+      cancelledBy: sos.cancelledBy ? (sos.cancelledBy.username || String(sos.cancelledBy)) : null,
+
+      user: {
+        id: user._id ? String(user._id) : (user.id || 'Not Available'),
+        name: user.username || 'Not Available',
+        mobileNumber: user.mobileNumber || 'Not Available',
+        email: user.email || 'Not Available',
+        groupName: collection.name || 'Not Available',
+        groupType: collection.type || 'Not Available',
+      },
+
+      location: {
+        latitude: hasCoordinates ? loc.latitude : null,
+        longitude: hasCoordinates ? loc.longitude : null,
+        accuracy: loc.accuracy != null ? `${loc.accuracy.toFixed(1)}m` : 'Not Available',
+        capturedAt: loc.capturedAt || 'Not Available',
+        source: loc.source || 'GPS',
+        status: loc.status || 'Not Available',
+        coordinatesText: hasCoordinates ? `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}` : 'Location Not Available',
+        mapsUrl: hasCoordinates ? `https://maps.google.com/?q=${loc.latitude},${loc.longitude}` : null,
+      },
+
+      media: {
+        frontImage: {
+          available: comps.frontImage?.status === COMPONENT_STATUS.SUCCESS,
+          status: comps.frontImage?.status || 'Not Available',
+          mimeType: comps.frontImage?.mimeType || null,
+          hasStorageRef: Boolean(comps.frontImage?.storageRef),
+        },
+        backImage: {
+          available: comps.backImage?.status === COMPONENT_STATUS.SUCCESS,
+          status: comps.backImage?.status || 'Not Available',
+          mimeType: comps.backImage?.mimeType || null,
+          hasStorageRef: Boolean(comps.backImage?.storageRef),
+        },
+        audio: {
+          available: comps.audio?.status === COMPONENT_STATUS.SUCCESS,
+          status: comps.audio?.status || 'Not Available',
+          mimeType: comps.audio?.mimeType || null,
+          hasStorageRef: Boolean(comps.audio?.storageRef),
+        },
+      },
+
+      channels: {
+        sms: comps.sms?.status || 'Not Available',
+        email: comps.email?.status || 'Not Available',
+        push: comps.push?.status || 'Not Available',
+        call: comps.call?.status || 'Not Available',
+      },
+    };
+  });
+
+  return {
+    reportMeta: {
+      period: dateRange.period,
+      formattedPeriodLabel: dateRange.formattedLabel,
+      startDate: dateRange.startDate,
+      endDate: dateRange.endDate,
+      startDateFormatted: dateRange.startDateFormatted,
+      endDateFormatted: dateRange.endDateFormatted,
+      filenameSuffix: dateRange.filenameSuffix,
+      generatedAt: new Date().toISOString(),
+      generatedBy: {
+        id: String(reqUser.id || reqUser._id),
+        username: reqUser.username || 'CoGG Safe User',
+        role: reqUser.role,
+        mobileNumber: reqUser.mobileNumber || null,
+        email: reqUser.email || null,
+      },
+      summary: {
+        totalRecords: totalCount,
+        activeRecords: activeCount,
+        deactivatedRecords: deactivatedCount,
+        cancelledRecords: totalCount - activeCount - deactivatedCount,
+      },
+      pagination: {
+        page,
+        limit,
+        totalPages: Math.ceil(totalCount / limit) || 1,
+      },
+    },
+    records: formattedRecords,
+  };
 }
 
 /**
@@ -629,4 +830,5 @@ module.exports = {
   stopLiveLocation,
   getLiveLocation,
   getMediaFileStream,
+  getSosReports,
 };
