@@ -13,6 +13,7 @@ const {
   reportServiceValidation,
   liveLocationPingValidation,
   getLiveLocationValidation,
+  reportQueryValidation,
 } = require('./sos.validation');
 const sosController = require('./sos.controller');
 const { uploadSingleFile } = require('./media.upload.middleware');
@@ -26,6 +27,7 @@ router.use(authenticate);
 
 router.post('/', createSosValidation, validateRequest, sosController.createSos);
 router.get('/', listSosValidation, validateRequest, sosController.listSos);
+router.get('/reports', reportQueryValidation, validateRequest, sosController.getSosReports);
 router.post('/:id/dispatch', sosIdParamValidation, validateRequest, sosController.dispatchSosAfterPersistence);
 router.get('/:id', sosIdParamValidation, validateRequest, sosController.getSos);
 
