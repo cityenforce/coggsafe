@@ -56,6 +56,15 @@ const listSos = asyncHandler(async (req, res) => {
   ApiResponse.send(res, { statusCode: httpStatus.OK, message: 'SOS records retrieved', data: { sos: items.map(item => withEmergencyLink(item, req)), meta } });
 });
 
+const getSosReports = asyncHandler(async (req, res) => {
+  const result = await sosService.getSosReports(req.query, req.user);
+  ApiResponse.send(res, {
+    statusCode: httpStatus.OK,
+    message: 'SOS report data retrieved successfully',
+    data: result,
+  });
+});
+
 const getSos = asyncHandler(async (req, res) => {
   const sos = await sosService.getSosById(req.params.id, req.user);
   ApiResponse.send(res, { statusCode: httpStatus.OK, message: 'SOS retrieved', data: { sos: withEmergencyLink(sos, req) } });
@@ -207,4 +216,5 @@ module.exports = {
   pingLiveLocation,
   stopLiveLocation,
   getLiveLocation,
+  getSosReports,
 };
