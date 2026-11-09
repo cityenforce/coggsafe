@@ -55,8 +55,22 @@ const createSosValidation = [
 
 const listSosValidation = [
   ...paginationValidation,
-  query('status').optional().isIn(Object.values(SOS_STATUS)).withMessage(`status must be one of: ${Object.values(SOS_STATUS).join(', ')}`),
+  query('status').optional().isIn([...Object.values(SOS_STATUS), 'all']).withMessage(`status must be one of: all, ${Object.values(SOS_STATUS).join(', ')}`),
   query('collectionId').optional().isMongoId().withMessage('Invalid collectionId'),
+  query('userId').optional().isMongoId().withMessage('Invalid userId'),
+  query('startDate').optional().isISO8601().withMessage('startDate must be a valid date or timestamp'),
+  query('endDate').optional().isISO8601().withMessage('endDate must be a valid date or timestamp'),
+];
+
+const reportQueryValidation = [
+  ...paginationValidation,
+  query('period').optional().isIn(['daily', 'weekly', 'monthly', 'yearly', 'custom']).withMessage('period must be one of: daily, weekly, monthly, yearly, custom'),
+  query('startDate').optional().isISO8601().withMessage('startDate must be a valid date or timestamp'),
+  query('endDate').optional().isISO8601().withMessage('endDate must be a valid date or timestamp'),
+  query('date').optional().isISO8601().withMessage('date must be a valid date or timestamp'),
+  query('year').optional().isInt({ min: 2000, max: 2100 }).withMessage('year must be an integer between 2000 and 2100'),
+  query('month').optional().isInt({ min: 1, max: 12 }).withMessage('month must be an integer between 1 and 12'),
+  query('status').optional().isIn([...Object.values(SOS_STATUS), 'all']).withMessage(`status must be one of: all, ${Object.values(SOS_STATUS).join(', ')}`),
   query('userId').optional().isMongoId().withMessage('Invalid userId'),
 ];
 
@@ -153,4 +167,5 @@ module.exports = {
   reportServiceValidation,
   liveLocationPingValidation,
   getLiveLocationValidation,
+  reportQueryValidation,
 };
