@@ -361,7 +361,7 @@ async function getSosReports(query, reqUser) {
   const [records, totalCount, activeCount, deactivatedCount] = await Promise.all([
     Sos.find(filter)
       .populate('userId', 'username mobileNumber email')
-      .populate('collectionId', 'name type')
+      .populate('collectionId', 'name type emergencyCallNumber')
       .populate('cancelledBy', 'username')
       .populate('deactivatedBy', 'username')
       .sort({ createdAt: -1 })
@@ -410,6 +410,10 @@ async function getSosReports(query, reqUser) {
 
     const comps = sos.components || {};
 
+    const liveLoc = sos.liveLocation || {};
+    const liveLastLoc = liveLoc.lastLocation || {};
+    const hasLiveCoords = liveLastLoc.latitude != null && liveLastLoc.longitude != null;
+
     return {
       id: String(sos._id),
       eventId: String(sos._id),
@@ -434,17 +438,30 @@ async function getSosReports(query, reqUser) {
         email: user.email || 'Not Available',
         groupName: collection.name || 'Not Available',
         groupType: collection.type || 'Not Available',
+        emergencyCallNumber: collection.emergencyCallNumber || 'Not Configured',
       },
 
       location: {
         latitude: hasCoordinates ? loc.latitude : null,
         longitude: hasCoordinates ? loc.longitude : null,
         accuracy: loc.accuracy != null ? `${loc.accuracy.toFixed(1)}m` : 'Not Available',
-        capturedAt: loc.capturedAt || 'Not Available',
+        capturedAt: loc.capturedAt || sos.createdAt,
         source: loc.source || 'GPS',
-        status: loc.status || 'Not Available',
+        status: loc.status || 'captured',
         coordinatesText: hasCoordinates ? `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}` : 'Location Not Available',
         mapsUrl: hasCoordinates ? `https://maps.google.com/?q=${loc.latitude},${loc.longitude}` : null,
+      },
+
+      liveLocation: {
+        status: liveLoc.status || 'not_started',
+        latitude: hasLiveCoords ? liveLastLoc.latitude : null,
+        longitude: hasLiveCoords ? liveLastLoc.longitude : null,
+        accuracy: liveLastLoc.accuracy != null ? `${liveLastLoc.accuracy.toFixed(1)}m` : 'Not Available',
+        capturedAt: liveLastLoc.capturedAt || null,
+        source: liveLastLoc.source || 'GPS',
+        coordinatesText: hasLiveCoords ? `${liveLastLoc.latitude.toFixed(6)}, ${liveLastLoc.longitude.toFixed(6)}` : null,
+        mapsUrl: hasLiveCoords ? `https://maps.google.com/?q=${liveLastLoc.latitude},${liveLastLoc.longitude}` : null,
+        isSameAsInitial: !hasLiveCoords || (hasCoordinates && Math.abs(liveLastLoc.latitude - loc.latitude) < 0.0001 && Math.abs(liveLastLoc.longitude - loc.longitude) < 0.0001),
       },
 
       media: {
@@ -453,26 +470,29 @@ async function getSosReports(query, reqUser) {
           status: comps.frontImage?.status || 'Not Available',
           mimeType: comps.frontImage?.mimeType || null,
           hasStorageRef: Boolean(comps.frontImage?.storageRef),
+          storageRef: comps.frontImage?.storageRef || null,
         },
         backImage: {
           available: comps.backImage?.status === COMPONENT_STATUS.SUCCESS,
           status: comps.backImage?.status || 'Not Available',
           mimeType: comps.backImage?.mimeType || null,
           hasStorageRef: Boolean(comps.backImage?.storageRef),
+          storageRef: comps.backImage?.storageRef || null,
         },
         audio: {
           available: comps.audio?.status === COMPONENT_STATUS.SUCCESS,
           status: comps.audio?.status || 'Not Available',
           mimeType: comps.audio?.mimeType || null,
           hasStorageRef: Boolean(comps.audio?.storageRef),
+          storageRef: comps.audio?.storageRef || null,
         },
       },
 
       channels: {
-        sms: comps.sms?.status || 'Not Available',
-        email: comps.email?.status || 'Not Available',
-        push: comps.push?.status || 'Not Available',
-        call: comps.call?.status || 'Not Available',
+        sms: comps.sms?.status === COMPONENT_STATUS.SUCCESS ? 'success' : (comps.sms?.error ? `failed: ${comps.sms.error}` : (comps.sms?.status || 'Not Configured')),
+        email: comps.email?.status === COMPONENT_STATUS.SUCCESS ? 'success' : (comps.email?.error ? `failed: ${comps.email.error}` : (comps.email?.status || 'Not Configured')),
+        push: comps.push?.status === COMPONENT_STATUS.SUCCESS ? 'success' : (comps.push?.error ? `failed: ${comps.push.error}` : (comps.push?.status || 'Not Configured')),
+        call: comps.call?.status === COMPONENT_STATUS.SUCCESS ? 'success' : (comps.call?.error ? `failed: ${comps.call.error}` : (comps.call?.status || 'Not Configured')),
       },
     };
   });
@@ -489,6 +509,7 @@ async function getSosReports(query, reqUser) {
       generatedAt: new Date().toISOString(),
       generatedBy: {
         id: String(reqUser.id || reqUser._id),
+        name: reqUser.username || 'CoGG Safe User',
         username: reqUser.username || 'CoGG Safe User',
         role: reqUser.role,
         mobileNumber: reqUser.mobileNumber || null,
